@@ -53,11 +53,17 @@ static uint8_t uart_dma_rx_buf[UART_DMA_RX_BUF_SIZE];
 static uint16_t uart_dma_read_idx = 0;
 volatile uint8_t dma_overwrite_flag = 0;
 volatile uint8_t command_overflow_flag = 0;
+volatile uint8_t uart_rx_idle_flag = 0;
 
 volatile uint32_t dma_bytes_processed = 0;
 volatile uint16_t last_write_idx = 0;
 volatile uint32_t dma_overwrite_count = 0;
 volatile uint16_t last_unread = 0;
+
+parser_t parser;
+command_queue_t cmd_queue;
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -110,11 +116,11 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_DMA(&huart2, uart_dma_rx_buf, UART_DMA_RX_BUF_SIZE);
+  __HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE);
 
-  parser_t parser;
   parser_init(&parser);
 
-  command_queue_t cmd_queue;
+
   command_queue_init(&cmd_queue);
 
   command_t cmd;
@@ -127,7 +133,11 @@ int main(void)
 
   while (1)
   {
-	  uart_dma_process_rx(&parser, &cmd_queue);
+	  if (uart_rx_idle_flag)
+	  {
+	      uart_rx_idle_flag = 0;
+	      uart_dma_process_rx(&parser, &cmd_queue);
+	  }
 
       while (command_queue_pop(&cmd_queue, &cmd))
       {
@@ -166,7 +176,7 @@ int main(void)
           command_overflow_flag = 0;
           uart_send_text("ERR_CMD_OVERFLOW\r\n");
       }
-      HAL_Delay(10);
+
   }
     /* USER CODE END WHILE */
 
