@@ -16,49 +16,100 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "ring_buffer.h"
 #include "parser.h"
-#include <string.h>
 #include "command_queue.h"
+#include <string.h>
 
+/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
 
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
-uint8_t rx_byte;
-ring_buffer_t uart_rx_rb;
-volatile uint8_t uart_overflow_flag = 0;
+#define UART_DMA_RX_BUF_SIZE 32
+
+static uint8_t uart_dma_rx_buf[UART_DMA_RX_BUF_SIZE];
+static uint16_t uart_dma_read_idx = 0;
+volatile uint8_t dma_overwrite_flag = 0;
 volatile uint8_t command_overflow_flag = 0;
+
+volatile uint32_t dma_bytes_processed = 0;
+volatile uint16_t last_write_idx = 0;
+volatile uint32_t dma_overwrite_count = 0;
+volatile uint16_t last_unread = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-static void uart_send_text(const char *msg);
+/* USER CODE BEGIN PFP */
 
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+static void uart_send_text(const char *msg);
+static uint16_t uart_dma_get_write_idx(void);
+static void uart_dma_process_rx(parser_t *parser, command_queue_t *cmd_queue);
+static uint16_t uart_dma_distance(uint16_t from, uint16_t to); //how many bytes lie between from and to moving forward around the ring
 /* USER CODE END 0 */
 
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
   SystemClock_Config();
 
-  MX_GPIO_Init();
-  MX_USART2_UART_Init();
+  /* USER CODE BEGIN SysInit */
 
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  ring_buffer_init(&uart_rx_rb);
-  HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+  HAL_UART_Receive_DMA(&huart2, uart_dma_rx_buf, UART_DMA_RX_BUF_SIZE);
 
   parser_t parser;
   parser_init(&parser);
@@ -72,20 +123,11 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  uint8_t byte;
+
 
   while (1)
   {
-      while (ring_buffer_pop(&uart_rx_rb, &byte))
-      {
-          if (parser_process_byte(&parser, byte, &cmd))
-          {
-              if (!command_queue_push(&cmd_queue, cmd))
-              {
-                  command_overflow_flag = 1;
-              }
-          }
-      }
+	  uart_dma_process_rx(&parser, &cmd_queue);
 
       while (command_queue_pop(&cmd_queue, &cmd))
       {
@@ -112,11 +154,11 @@ int main(void)
           }
       }
 
-      if (uart_overflow_flag)
+      if (dma_overwrite_flag)
       {
           parser_init(&parser);
-          uart_overflow_flag = 0;
-          uart_send_text("ERR_UART_OVERFLOW\r\n");
+          dma_overwrite_flag = 0;
+          uart_send_text("ERR_DMA_OVERWRITE\r\n");
       }
 
       if (command_overflow_flag)
@@ -124,13 +166,74 @@ int main(void)
           command_overflow_flag = 0;
           uart_send_text("ERR_CMD_OVERFLOW\r\n");
       }
+      HAL_Delay(10);
   }
-  /* USER CODE END WHILE */
-}
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
 
 static void uart_send_text(const char *msg)
 {
     HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+}
+
+static uint16_t uart_dma_get_write_idx(void)
+{
+    return UART_DMA_RX_BUF_SIZE - __HAL_DMA_GET_COUNTER(huart2.hdmarx);
+}
+
+static void uart_dma_process_rx(parser_t *parser, command_queue_t *cmd_queue)
+{
+
+    uint16_t write_idx = uart_dma_get_write_idx();
+    command_t cmd;
+
+    last_write_idx = write_idx;
+
+    uint16_t unread = uart_dma_distance(uart_dma_read_idx, write_idx);
+    last_unread = unread;
+
+    if (unread >= UART_DMA_RX_BUF_SIZE - 1)
+    {
+        dma_overwrite_flag = 1;
+        dma_overwrite_count++;
+        uart_dma_read_idx = write_idx;
+        return;
+    }
+
+    while (uart_dma_read_idx != write_idx)
+    {
+        uint8_t byte = uart_dma_rx_buf[uart_dma_read_idx];
+        dma_bytes_processed++;
+
+        if (parser_process_byte(parser, byte, &cmd))
+        {
+            if (!command_queue_push(cmd_queue, cmd))
+            {
+                command_overflow_flag = 1;
+            }
+        }
+
+        uart_dma_read_idx++;
+        if (uart_dma_read_idx >= UART_DMA_RX_BUF_SIZE)
+        {
+            uart_dma_read_idx = 0;
+        }
+    }
+}
+
+static uint16_t uart_dma_distance(uint16_t from, uint16_t to)
+{
+    if (to >= from)
+    {
+        return to - from;
+    }
+    else
+    {
+        return UART_DMA_RX_BUF_SIZE - from + to;
+    }
 }
 
 /**
@@ -142,9 +245,14 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
+  /** Configure the main internal regulator output voltage
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -160,6 +268,8 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -180,6 +290,14 @@ void SystemClock_Config(void)
   */
 static void MX_USART2_UART_Init(void)
 {
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -192,54 +310,102 @@ static void MX_USART2_UART_Init(void)
   {
     Error_Handler();
   }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+
 }
 
 /**
   * @brief GPIO Initialization Function
+  * @param None
   * @retval None
   */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
 
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PA5 */
   GPIO_InitStruct.Pin = GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == USART2)
-    {
-        if (!ring_buffer_push(&uart_rx_rb, rx_byte))
-        {
-            uart_overflow_flag = 1;
-        }
-
-        HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
-    }
+    (void)huart;
+    /* Not used in DMA RX mode */
 }
 /* USER CODE END 4 */
 
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
   }
+  /* USER CODE END Error_Handler_Debug */
 }
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

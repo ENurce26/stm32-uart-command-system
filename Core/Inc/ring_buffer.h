@@ -10,7 +10,7 @@ typedef struct
 {
     uint8_t buffer[UART_RX_BUFFER_SIZE];
     volatile uint16_t head;
-    volatile uint16_t tail;
+    volatile uint16_t tail; //volatile for action between isr and main loop.
 } ring_buffer_t;
 
 void ring_buffer_init(ring_buffer_t *rb);
