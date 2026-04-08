@@ -21,6 +21,7 @@
 #include "main.h"
 #include "ring_buffer.h"
 #include "parser.h"
+#include <string.h>
 #include "command_queue.h"
 
 /* USER CODE BEGIN Includes */
@@ -41,6 +42,7 @@ volatile uint8_t command_overflow_flag = 0;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void uart_send_text(const char *msg);
 
 /* USER CODE BEGIN 0 */
 
@@ -66,138 +68,6 @@ int main(void)
 
   command_t cmd;
 
-  uint8_t pkt_on[]     = {0xAA, 0x01, 0x01, 0x00, 0x55};
-  uint8_t pkt_off[]    = {0xAA, 0x01, 0x02, 0x03, 0x55};
-  uint8_t pkt_toggle[] = {0xAA, 0x01, 0x03, 0x02, 0x55};
-  uint8_t pkt_bad[]    = {0xAA, 0x01, 0x02, 0x00, 0x55};
-
-  for (int i = 0; i < 5; i++)
-  {
-      if (parser_process_byte(&parser, pkt_on[i], &cmd))
-      {
-          if (!command_queue_push(&cmd_queue, cmd))
-          {
-              command_overflow_flag = 1;
-          }
-      }
-  }
-  while (command_queue_pop(&cmd_queue, &cmd))
-  {
-      switch (cmd)
-      {
-          case CMD_LED_ON:
-              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-              break;
-
-          case CMD_LED_OFF:
-              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-              break;
-
-          case CMD_LED_TOGGLE:
-              HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-              break;
-
-          default:
-              break;
-      }
-  }
-  HAL_Delay(1000);
-
-  for (int i = 0; i < 5; i++)
-  {
-      if (parser_process_byte(&parser, pkt_off[i], &cmd))
-      {
-          if (!command_queue_push(&cmd_queue, cmd))
-          {
-              command_overflow_flag = 1;
-          }
-      }
-  }
-  while (command_queue_pop(&cmd_queue, &cmd))
-  {
-      switch (cmd)
-      {
-          case CMD_LED_ON:
-              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-              break;
-
-          case CMD_LED_OFF:
-              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-              break;
-
-          case CMD_LED_TOGGLE:
-              HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-              break;
-
-          default:
-              break;
-      }
-  }
-  HAL_Delay(1000);
-
-  for (int i = 0; i < 5; i++)
-  {
-      if (parser_process_byte(&parser, pkt_toggle[i], &cmd))
-      {
-          if (!command_queue_push(&cmd_queue, cmd))
-          {
-              command_overflow_flag = 1;
-          }
-      }
-  }
-  while (command_queue_pop(&cmd_queue, &cmd))
-  {
-      switch (cmd)
-      {
-          case CMD_LED_ON:
-              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-              break;
-
-          case CMD_LED_OFF:
-              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-              break;
-
-          case CMD_LED_TOGGLE:
-              HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-              break;
-
-          default:
-              break;
-      }
-  }
-  HAL_Delay(1000);
-
-  for (int i = 0; i < 5; i++)
-  {
-      if (parser_process_byte(&parser, pkt_bad[i], &cmd))
-      {
-          if (!command_queue_push(&cmd_queue, cmd))
-          {
-              command_overflow_flag = 1;
-          }
-      }
-  }
-  while (command_queue_pop(&cmd_queue, &cmd))
-  {
-      switch (cmd)
-      {
-          case CMD_LED_ON:
-              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-              break;
-
-          case CMD_LED_OFF:
-              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-              break;
-
-          case CMD_LED_TOGGLE:
-              HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-              break;
-
-          default:
-              break;
-      }
-  }
-  HAL_Delay(1000);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -223,17 +93,21 @@ int main(void)
           {
               case CMD_LED_ON:
                   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+                  uart_send_text("CMD_LED_ON\r\n");
                   break;
 
               case CMD_LED_OFF:
                   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+                  uart_send_text("CMD_LED_OFF\r\n");
                   break;
 
               case CMD_LED_TOGGLE:
                   HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+                  uart_send_text("CMD_LED_TOGGLE\r\n");
                   break;
 
               default:
+                  uart_send_text("CMD_UNKNOWN\r\n");
                   break;
           }
       }
@@ -242,16 +116,21 @@ int main(void)
       {
           parser_init(&parser);
           uart_overflow_flag = 0;
+          uart_send_text("ERR_UART_OVERFLOW\r\n");
       }
 
       if (command_overflow_flag)
       {
-          /* Temporary debug action: blink/toggle LED once */
-          HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
           command_overflow_flag = 0;
+          uart_send_text("ERR_CMD_OVERFLOW\r\n");
       }
   }
   /* USER CODE END WHILE */
+}
+
+static void uart_send_text(const char *msg)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
 }
 
 /**

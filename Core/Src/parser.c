@@ -23,7 +23,7 @@ bool parser_process_byte(parser_t *p, uint8_t byte, command_t *out_cmd)
             break;
 
         case READ_LEN:
-            if (byte == 0 || byte > 64)
+            if (byte == 0 || byte > 64) //guard for byte sizes
             {
                 p->state = WAIT_START;
                 break;
@@ -38,7 +38,7 @@ bool parser_process_byte(parser_t *p, uint8_t byte, command_t *out_cmd)
         case READ_CMD:
             p->cmd = byte;
             p->checksum ^= byte;
-            p->state = (p->length > 1) ? READ_DATA : READ_CHECKSUM;
+            p->state = (p->length > 1) ? READ_DATA : READ_CHECKSUM; //After reading the command byte, do I expect payload data next, or do I go straight to checksum?
             break;
 
         case READ_DATA:
